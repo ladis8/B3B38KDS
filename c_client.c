@@ -4,6 +4,7 @@
 #include <sys/socket.h> 
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <unistd.h> //close open 
 
 
 
@@ -17,8 +18,11 @@
 #define PORT 9999// The port on which to send data
 
 #define TIMEOUT 500
+#define FRAMESIZE 5 //must fit in uint8_t
 
 //TODO: user input arguments
+//TODO: store packets in FRAME buffer
+
 //
 //
 //
@@ -41,20 +45,33 @@ int getFileSize(FILE *fp) {
 int sendPacket(uint8_t *buffer, int bufferLength){
 
     int bytesSend;	
-    if (bytesSend = sendto(socketFd, buffer, bufferLength, 0, (struct sockaddr *) &servaddr, (socklen_t) serverAddressLength) == -1 ) {
+    if ((bytesSend = sendto(socketFd, buffer, bufferLength, 0, (struct sockaddr *) &servaddr, (socklen_t) serverAddressLength)) == -1 ) {
         return -1;
     }
     return bytesSend;
 }
 int receivePacket(uint8_t *buffer, int bufferLength){
     int bytesReceived = recvfrom(socketFd, buffer, bufferLength, 0, (struct sockaddr *)&servaddr,(socklen_t *) &myAddressLength);
+
+    //printf("DEBUG: Received bytes are %d Packet %d %d \n",bytesReceived, buffer[0], buffer[1]);
     if ( bytesReceived == -1) {
         return -1;
     }
-    printf("DEBUG: Received bytes are %d Packet %d string %s\n",bytesReceived, buffer[1], buffer);
     return bytesReceived;
 
 }
+
+
+
+
+void restoreAcknowledgedPackets(int *ACKPackets){
+
+    for (int i = 0; i < FRAMESIZE; i++){
+        ACKPackets[i] = -1;
+    }
+}
+
+
 
 //OUTPUT VALUE :
 //  timeout expired
@@ -79,12 +96,12 @@ int waitForACK(int packetId){
     else if (FD_ISSET(socketFd, &readSet)){
         uint8_t ACKBuffer;
         if (receivePacket(&ACKBuffer, sizeof(uint8_t)) == 1){
-            if (ACKBuffer == 0x31){
+            if (ACKBuffer == 1){
                 printf("SUCCESS: packet with chunkID %d sent\n", packetId);
                 return 0;
             }
             else{  //ACK was not received or was 0
-                printf("ERROR: ACK %c was not 1\n",ACKBuffer);
+                printf("ERROR: ACK %d was not 1\n",ACKBuffer);
                 return -1;
             }
         }
@@ -94,51 +111,175 @@ int waitForACK(int packetId){
 
 
 
-void sendFile (FILE *fileFd){
 
-    //uint8_t buffer [BUFLEN];
+//OUTPUT VALUE :
+//  timeout expired
+//  ACK received
+//ACKCounter ... number of successfully sent packets so far
+int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowledgedPacket ){
 
-    uint8_t* buffer = (uint8_t*) malloc(BUFLEN);
-    int bytesRead;
-    int chunkId = 0;
-    uint32_t crc;
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = TIMEOUT * 1000;
+    fd_set readSet;
+    FD_ZERO(&readSet);
+    FD_SET(socketFd, &readSet);
 
-    //set cursor
-    fseek(fileFd, 0L, SEEK_SET);
 
-    //read the first chunk
-    while (!feof(fileFd)){
+	
+	while (ACKCounter < FRAMESIZE){
 
-        //read chunk
-        bytesRead = fread(buffer, 1, CHUNKSIZE, fileFd);
-        printf("Bytes read %d\n",bytesRead);
+    	int event = select(socketFd+1, &readSet, NULL, NULL, &tv);
+		
+		//ERROR
+    	if (event == -1){
+        	forceExit("Error happend in wait for sockets");
+    	}
 
-        //calculate crc
-        crc = crc32(buffer, bytesRead);
+		//TIMEOUT
+    	else if (event == 0){
+			for (int i=0; i < FRAMESIZE; i++){
+					if (ACKPackets[i] == -1)
+        				printf("DEBUG: TIMEOUT in receiving ACK for packet %d  in frame from  %d\n", (leastAcknowledgedPacket +i), leastAcknowledgedPacket);
+			}	
+        	return -1;
+		}
 
-        //send chunk to server
-        memcpy(buffer + bytesRead , &chunkId, sizeof(int));
-        memcpy(buffer + bytesRead+ sizeof(int), &crc, sizeof(int));
-        if (sendPacket(buffer,bytesRead + CONTROL) == -1){
-            perror("Packet was not sent succesfully"); 
-        }
-        //STOP AND WAIT 
-        while (waitForACK(chunkId) == -1){
-            if (sendPacket(buffer,BUFLEN) == -1){
-                perror("Packet was not sent succesfully"); 
-            }
-        }
-        chunkId++;
+		//SUCCESS
+		else if (FD_ISSET(socketFd, &readSet)){
+			uint8_t ACKBuffer [2]; 
+			//first 0/1 good  or bad 
+			//index of ACK in frame
+
+			if (receivePacket(ACKBuffer, 2 * sizeof(uint8_t)) == 2){
+
+				uint8_t ACKIndex = ACKBuffer[1];
+                if (ACKIndex < FRAMESIZE){
+
+                    ACKCounter++;
+                    if (ACKBuffer[0] == 1){
+                        printf("DEBUG: SUCCESS for packet with chunkID %d\n", (leastAcknowledgedPacket + ACKIndex));
+                        ACKPackets[ACKIndex] = 1;
+                    }
+                    else{  //ACK was not received or was 0
+                        printf("DEBUG: ERROR for packet with chunk %d - ACK was 0\n",(leastAcknowledgedPacket + ACKIndex));
+                    }
+                    
+                }
+			}
+		}
+
+	}
+
+	return 0;
+}
+
+
+
+
+
+void sendFilebySelectiveRepeat(uint8_t *fileBuffer, int fileSize){
+    
+    int ACKPackets [FRAMESIZE];
+	int ACKCounter = 0;
+    restoreAcknowledgedPackets(ACKPackets);
+
+
+    //count needed packets 
+    int numPackets = fileSize/((int)CHUNKSIZE) + 1;
+
+    int leastAcknowledgedPacket = 0;
+    printf ("Total number of packets will be %d\n", numPackets);
+    
+    //create send buffer
+    uint8_t* sendBuffer = (uint8_t*) malloc(BUFLEN);
+    if (!sendBuffer){
+        forceExit("Memory allocation failed!");
     }
+
+    FILE* fileFd = fopen("ahoj.pdf", "wb");
+
+    fwrite(fileBuffer, fileSize, 1, fileFd);
+    int failesCounter = 0;
+
+
+    
+    while (leastAcknowledgedPacket < numPackets){
+
+        uint32_t crc;
+
+        //send as many packets as unacknowledged in frame
+        for (int i = 0; i < FRAMESIZE; i++){
+            if (ACKPackets[i] == -1){
+
+                //send chunk to server
+                int packetId = leastAcknowledgedPacket + i;
+                int packetDataSize = (packetId == numPackets -1)? fileSize%((int)CHUNKSIZE) : CHUNKSIZE;
+                memcpy(sendBuffer, fileBuffer + packetId * ((int)CHUNKSIZE), packetDataSize);
+
+                //calculate crc
+                crc = crc32(sendBuffer, packetDataSize);
+                memcpy(sendBuffer + packetDataSize, &i, sizeof(int));
+                memcpy(sendBuffer + packetDataSize+ sizeof(int), &crc, sizeof(int));
+
+                if (sendPacket(sendBuffer,packetDataSize + CONTROL) == -1){
+                    perror("Packet was not sent succesfully"); 
+                }
+            }
+            else
+                failesCounter++;
+
+        }
+
+        //wait for the ACKs
+		waitForACKSelectiveRepeat(ACKCounter, ACKPackets, leastAcknowledgedPacket);
+
+		//get number of so far successfully sent packets
+		int ACKCounter = 0;
+		for (int i = 0; i < FRAMESIZE; i++){
+            printf("%d ", ACKPackets[i]);
+			if (ACKPackets[i] == 1) ACKCounter++;
+		}
+        printf ("ACK counter %d\n", ACKCounter);
+		
+
+		//check end of frame		
+		if (ACKCounter == FRAMESIZE){
+			leastAcknowledgedPacket += FRAMESIZE;
+			
+			//check end of communication
+			//if communication is at the end, send only the remaining number of packets
+			if (leastAcknowledgedPacket + FRAMESIZE > numPackets){
+				int numPacketsToRemain = numPackets - leastAcknowledgedPacket;
+				for (int i = 0; i < numPacketsToRemain; i++){
+					ACKPackets[i] = -1;
+				}
+			}
+			else
+				restoreAcknowledgedPackets(ACKPackets);
+		}
+
+
+	}
+    printf ("Failes counter %d\n", failesCounter);
+
+		
+		
+
+
+    
+
+
+    
 }
 
 
 int main(int argc, char **argv) {
     //clock_t program_start = time(0);
 
-    char buffer[BUFLEN]; 
-    char *hello = "Hello";
 
+    
+    uint8_t sendBuffer[BUFLEN]; 
 
     if (argc < 3) {
         printf("HELP Usage: ./sender <adress> <filename>\n");
@@ -160,24 +301,22 @@ int main(int argc, char **argv) {
 
 
 
-    //bind(socketfd,(const struct sockaddr*) &servaddr);
 
     //read file
     char* fileName = argv[2];
     FILE* fileFd = fopen(fileName, "rb");
     if (fileFd == NULL){
-        perror("File decsriptor creation failed"); 
-        exit(EXIT_FAILURE);
+        forceExit("File descriptor creation failed!");
     }
     int fileSize = getFileSize(fileFd);
-    printf("The file size is %d", fileSize);
-    uint8_t* fileBuffer = (uint8_t*) malloc(fileSize+1);
+    printf("The file size is %d\n", fileSize);
+    uint8_t* fileBuffer = (uint8_t*) malloc(fileSize);
     if (!fileBuffer){
-        perror("Memory allocation error"); 
-        exit(EXIT_FAILURE);
+        forceExit("Memory allocation failed!");
     }
 
     fread(fileBuffer, fileSize, 1, fileFd); 
+    fclose(fileFd);
 
 
     //Sending filename
@@ -195,8 +334,7 @@ int main(int argc, char **argv) {
 
     //sending file
     printf("Sending file...\n");
-    sendFile(fileFd);
-    fclose(fileFd);
+    sendFilebySelectiveRepeat(fileBuffer, fileSize);
 
 
     //sending MD5
@@ -210,12 +348,12 @@ int main(int argc, char **argv) {
 
     //calculate crc
     uint32_t crc = crc32(md5Hash, md5Length);
-    memcpy(buffer, md5Hash, md5Length);
-    memcpy(buffer + md5Length , &crc, sizeof(uint32_t));
-    sendPacket(buffer, md5Length + sizeof(uint32_t));
+    memcpy(sendBuffer, md5Hash, md5Length);
+    memcpy(sendBuffer + md5Length , &crc, sizeof(uint32_t));
+    sendPacket(sendBuffer, md5Length + sizeof(uint32_t));
     //STOP AND WAIT 
     while (waitForACK(-1) == -1){
-        if (sendPacket(buffer, md5Length) == -1){
+        if (sendPacket(sendBuffer, md5Length) == -1){
             perror("Packet was not sent succesfully"); 
         }
     }

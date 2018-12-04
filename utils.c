@@ -15,10 +15,11 @@ uint32_t crc32(uint8_t *message, int buffSize) {
   }
   return ~crc;
 }
-int getmd5Hash(uint8_t **md5Buffer, uint8_t *buffer, int bufferLength){
-    printf ("value %d\n",md5Buffer);
-    printf ("value %d\n",*md5Buffer);
 
+
+
+
+int getmd5Hash(uint8_t **md5Buffer, uint8_t *buffer, int bufferLength){
 	MD5_CTX md5;
     *md5Buffer = (uint8_t*) malloc(MD5_DIGEST_LENGTH);
 

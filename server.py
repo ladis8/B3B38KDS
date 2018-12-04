@@ -1,116 +1,195 @@
 # ----- receiver.py -----
 
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 import socket
-import os
-import struct
 import sys
 import hashlib
 import binascii
 import random
 import logging
+from struct import pack
+from struct import unpack
 
 DEBUG = True
 
+host = '127.0.0.1'
+port = 9999
+BUFLEN = 1024
+CONTROL = 8
+CHUNK_SIZE = BUFLEN - CONTROL
+
+ERROR_DATA = 0.0
+ERROR_ACK_LOST = 0.0
+
+def sendACK(s, addr, positive, chunk_id=None):
+
+    ACK = 1
+    NOT_ACK = 0
+    #simulate lost ACK
+    if random.random() < ERROR_ACK_LOST:
+        logging.debug("ACK LOST...")
+        return
+
+    # send positive ACK
+    if positive:
+        s.sendto(pack('b', ACK) + pack('b', chunk_id), addr) if chunk_id is not None else s.sendto(pack('b', ACK), addr)
+    else:
+        s.sendto(pack('b', NOT_ACK) + pack('b', chunk_id), addr) if chunk_id is not None else s.sendto(pack('b', NOT_ACK), addr)
+
+
+def unpack_packet(data):
+    crc_received = unpack("I", bytes(data[-4:]))[0]
+    chunk_id = unpack("I", bytes(data[-8:-4]))[0]
+    file_data = data[:-8]
+    return chunk_id, crc_received, file_data
+
+def check_md5(socket, md5_hash):
+    data, addr = socket.recvfrom(1024)
+    crc_received = unpack("I", bytes(data[-4:]))[0]
+    crc_computed = binascii.crc32(data[:-4])
+    md5_hash_received = binascii.hexlify(data[:-4])
+    md5_hash_computed = binascii.hexlify(md5_hash.digest())
+
+    logging.info("MD5 hash received : %s, computed MD5 hash: %s, crc received %d, crc computed: %d", md5_hash_received,
+                 md5_hash_computed, crc_received, crc_computed)
+
+    if crc_computed == crc_received:
+        # send positive ACK
+        logging.debug("SUCCESS: Sending positive ACK for MD5 hash")
+        sendACK(socket, addr, True)
+        if md5_hash_computed == md5_hash_received:
+            logging.info("File has been transfered successfully")
+        else:
+            logging.info("File is CORRUPTED!!!")
+    else:
+        logging.debug("ERROR: Sending negative ACK")
+        sendACK(socket, addr, False)
+
+
+
+def receive_file_SelectiveRepeat(socket, file_size, file_name, FRAMESIZE):
+    packet_buffer = [None] * FRAMESIZE
+
+    num_packets = file_size//CHUNK_SIZE + 1
+
+    with open("new_" + file_name, "wb") as f_rec:
+        md5_hash = hashlib.md5()
+        least_acknowledged_packet_id = 0
+        while least_acknowledged_packet_id < num_packets:
+
+            # receive data
+            data, addr = socket.recvfrom(BUFLEN)
+            frame_index, crc_received, file_data = unpack_packet(data)
+
+            # compute crc
+            crc_computed = binascii.crc32(file_data)
+
+            logging.debug("Expected chunk: from %d to %d, frame index received %d, crc received %d, crc computed: %d ",
+                          least_acknowledged_packet_id, least_acknowledged_packet_id + FRAMESIZE, frame_index,
+                          crc_received, crc_computed)
+
+            assert (frame_index < FRAMESIZE)
+
+            #send ACK
+            if crc_computed == crc_received and random.random() > ERROR_DATA: #simulate bad CRC
+                logging.debug("SUCCESS Sending positive ACK for packet %d", least_acknowledged_packet_id + frame_index)
+                sendACK(socket, addr, True, frame_index)
+                packet_buffer[frame_index] = file_data
+            else:
+                logging.debug("ERROR Sending negative ACK for packet %d", least_acknowledged_packet_id + frame_index)
+                sendACK(socket, addr, False, frame_index)
+
+            # check that all packets in frame has been delivered
+            if not None in packet_buffer:
+                logging.debug("All packets in frame from %d has been delivered", least_acknowledged_packet_id)
+                least_acknowledged_packet_id += FRAMESIZE
+
+                #write to file
+                for i, packet in enumerate(packet_buffer):
+                    f_rec.write(packet)
+                    md5_hash.update(packet)
+
+                #update packet buffer
+                buffers_num = FRAMESIZE if least_acknowledged_packet_id + FRAMESIZE < num_packets else num_packets - least_acknowledged_packet_id
+                packet_buffer = [None] * buffers_num
+
+
+    check_md5(socket, md5_hash)
+
+def receive_file_StopAndWait(socket, file_size, file_name):
+
+    num_packets = file_size//CHUNK_SIZE + 1
+
+    with open("new_" + file_name, "wb") as f_rec:
+        md5_hash = hashlib.md5()
+        next_chunk_id = 0
+        while next_chunk_id < num_packets:
+            # receive data
+            data, addr = socket.recvfrom(1024)
+
+            # unpack data
+            data = bytearray(data)
+            crc_received = unpack("I", bytes(data[-4:]))[0]
+            chunk_id = unpack("I", bytes(data[-8:-4]))[0]
+            file_data = data[:-8]
+
+            # compute crc
+            crc_computed = binascii.crc32(file_data)
+
+            logging.debug("Chunk received: %d, expected chunk: %d, crc received %d, crc computed: %d ", chunk_id,
+                          next_chunk_id, crc_received, crc_computed)
+
+            #packet OK
+            if crc_computed == crc_received and next_chunk_id == chunk_id and random.random() > ERROR_DATA:
+                # send positive ACK
+
+                logging.debug("SUCCESS Sending positive ACK for packet %d", chunk_id)
+                sendACK(socket, addr, True)
+
+                # write data to file
+                f_rec.write(file_data)
+                md5_hash.update(file_data)
+
+                next_chunk_id += 1
+            #former packet - send OK ACK
+            elif chunk_id < next_chunk_id:
+                logging.debug("Again sending positive ACK for packet %d", chunk_id)
+                sendACK(socket, addr, True)
+            else:
+                logging.debug("ERROR Sending negative ACK for packet %d", chunk_id)
+                sendACK(socket, addr, False)
+
+        # receive md5
+        check_md5(socket, md5_hash)
 
 def Main():
-    host = '127.0.0.1'
-    port = 9999
-    BUFLEN = 1024
-    CONTROL = 8
-    CHUNK_SIZE = BUFLEN - CONTROL
-
-    ACK = "1"
-    NOT_ACK = "0"
-
-    if DEBUG: logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger().setLevel(logging.DEBUG) if DEBUG else logging.getLogger().setLevel(logging.INFO)
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind((host, port))
+    logging.info("UDP server Started...")
 
+    # receive filename
+    data, addr = s.recvfrom(1024)
+    logging.info("Connection from %s", addr)
+    file_name = data.decode("ascii").split("/")[-1]
 
-    print("UDP server Started")
+    # receive filesize
+    data, addr = s.recvfrom(1024)
+    file_size = unpack("I", data)[0]
 
-    while True:
+    logging.info("File %s with size %d will be received", file_name, file_size)
 
-        #receive filename
-        data, addr = s.recvfrom(1024)
-        print("Connection from: " + str(addr), "data ", data)
+    # receive file
+    method = int(sys.argv[1])
 
-        #receive filesize
-        data, addr = s.recvfrom(1024)
-        size =  struct.unpack("I", data)[0]
-        print("Connection from: " + str(addr), "data ", size)
-        chunks_num = size//CHUNK_SIZE +1
-
-
-        #receive file
-
-        with open("received_file", "wb") as f_rec:
-            md5_hash = hashlib.md5()
-            next_chunk_id = 0
-            while True:
-                #receive data
-                data, addr = s.recvfrom(1024)
-
-                #unpack data
-                data = bytearray(data)
-                crc_received =  struct.unpack("I", bytes(data [-4:]))[0]
-                chunk_id = struct.unpack("I", bytes(data [-8:-4]))[0]
-                file_data = data[:-8]
-
-                #compute crc
-                crc_computed = binascii.crc32(file_data)
-
-                logging.debug("Chunk received: %d, expected chunk: %d, crc received %d, crc computed: %d ", chunk_id, next_chunk_id, crc_received, crc_computed)
-                if crc_computed == crc_received and next_chunk_id == chunk_id and random.random() > 0.1 :
-                    #send positive ACK
-                    logging.debug("SUCCESS: Sending positive ACK")
-                    s.sendto(bytes(ACK, "ascii"), addr)
-
-                    #write data to file
-                    f_rec.write(file_data)
-                    md5_hash.update(file_data)
-
-                    next_chunk_id +=1
-                    if chunk_id == chunks_num-1:
-                        print(file_data)
-                        break
-                else:
-                    logging.debug("ERROR: Sending negative ACK")
-                    s.sendto(bytes(NOT_ACK, "ascii"), addr)
-
-
-
-            #receive md5
-            data, addr = s.recvfrom(1024)
-            crc_received =  struct.unpack("I", bytes(data [-4:]))[0]
-            crc_computed = binascii.crc32(data[:-4])
-            md5_hash_received= binascii.hexlify(data[:-4])
-            md5_hash_computed = binascii.hexlify(md5_hash.digest())
-
-            logging.info("MD5 hash received : %s, computed MD5 hash: %s, crc received %d, crc computed: %d", md5_hash_received, md5_hash_computed, crc_received, crc_computed)
-
-            if crc_computed == crc_received:
-
-                #send positive ACK
-                logging.debug("SUCCESS: Sending positive ACK")
-                s.sendto(bytes(ACK, "ascii"), addr)
-                if md5_hash_computed == md5_hash_received:
-                    logging.info("File has been transfered successfully")
-                    s.close()
-                    break
-                else:
-                    logging.error("File is CORRUPTED!!!")
-            else:
-                logging.debug("ERROR: Sending negative ACK")
-                s.sendto(bytes(NOT_ACK, "ascii"), addr)
-
-
-
-
+    if method == 1:
+        FRAMESIZE = int(sys.argv[2])
+        receive_file_SelectiveRepeat(s, file_size, file_name, FRAMESIZE)
+    elif method == 0:
+        receive_file_StopAndWait(s, file_size, file_name)
 
 if __name__ == '__main__':
     Main()
