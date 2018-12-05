@@ -147,13 +147,13 @@ int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowle
 
 		//SUCCESS
 		else if (FD_ISSET(socketFd, &readSet)){
-			uint8_t ACKBuffer [2]; 
+			uint32_t ACKBuffer [2]; 
 			//first 0/1 good  or bad 
 			//index of ACK in frame
 
-			if (receivePacket(ACKBuffer, 2 * sizeof(uint8_t)) == 2){
+			if (receivePacket(ACKBuffer, 2 * sizeof(uint32_t)) == 2){
 
-				uint8_t ACKIndex = ACKBuffer[1];
+				uint32_t ACKIndex = ACKBuffer[1]%((int)FRAMESIZE);
                 if (ACKIndex < FRAMESIZE){
 
                     ACKCounter++;
@@ -219,7 +219,7 @@ void sendFilebySelectiveRepeat(uint8_t *fileBuffer, int fileSize){
 
                 //calculate crc
                 crc = crc32(sendBuffer, packetDataSize);
-                memcpy(sendBuffer + packetDataSize, &i, sizeof(int));
+                memcpy(sendBuffer + packetDataSize, &packetId, sizeof(int));
                 memcpy(sendBuffer + packetDataSize+ sizeof(int), &crc, sizeof(int));
 
                 if (sendPacket(sendBuffer,packetDataSize + CONTROL) == -1){
