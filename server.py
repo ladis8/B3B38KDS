@@ -14,14 +14,14 @@ from struct import unpack
 
 DEBUG = True
 
-host = '127.0.0.1'
+host = '0.0.0.0'
 port = 9999
 BUFLEN = 1024
 CONTROL = 8
 CHUNK_SIZE = BUFLEN - CONTROL
 
-ERROR_DATA = 0.0
-ERROR_ACK_LOST = 0.0
+ERROR_DATA = 0.1
+ERROR_ACK_LOST = 0.03
 
 def sendACK(s, addr, positive, chunk_id=None):
 
@@ -142,21 +142,17 @@ def receive_file_StopAndWait(socket, file_size, file_name):
                           next_chunk_id, crc_received, crc_computed)
 
             #packet OK
-            if crc_computed == crc_received and next_chunk_id == chunk_id and random.random() > ERROR_DATA:
+            if crc_computed == crc_received and random.random() > ERROR_DATA:
                 # send positive ACK
-
                 logging.debug("SUCCESS Sending positive ACK for packet %d", chunk_id)
                 sendACK(socket, addr, True)
 
-                # write data to file
-                f_rec.write(file_data)
-                md5_hash.update(file_data)
+                # write data to file only if the needed packet has been received
+                if chunk_id == next_chunk_id:
+                    f_rec.write(file_data)
+                    md5_hash.update(file_data)
 
-                next_chunk_id += 1
-            #former packet - send OK ACK
-            elif chunk_id < next_chunk_id:
-                logging.debug("Again sending positive ACK for packet %d", chunk_id)
-                sendACK(socket, addr, True)
+                    next_chunk_id += 1
             else:
                 logging.debug("ERROR Sending negative ACK for packet %d", chunk_id)
                 sendACK(socket, addr, False)
