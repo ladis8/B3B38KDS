@@ -114,15 +114,12 @@ void sendFile (FILE *fileFd){
         //send chunk to server
         memcpy(buffer + bytesRead , &chunkId, sizeof(int));
         memcpy(buffer + bytesRead+ sizeof(int), &crc, sizeof(int));
-        if (sendPacket(buffer,bytesRead + CONTROL) == -1){
-            perror("Packet was not sent succesfully"); 
-        }
+
         //STOP AND WAIT 
-        while (waitForACK(chunkId) == -1){
-            if (sendPacket(buffer,bytesRead + CONTROL) == -1){
-                perror("Packet was not sent succesfully"); 
-            }
-        }
+		do{
+			if (sendPacket(buffer,bytesRead + CONTROL) == -1)
+				perror("Packet was not sent succesfully"); 
+        }while (waitForACK(chunkId) == -1);
         chunkId++;
     }
 }
@@ -131,7 +128,7 @@ void sendFile (FILE *fileFd){
 int main(int argc, char **argv) {
     //clock_t program_start = time(0);
 
-    uint8_t buffer[BUFLEN]; 
+    uint8_t sendBuffer[BUFLEN]; 
 
 
     if (argc < 3) {
@@ -196,6 +193,7 @@ int main(int argc, char **argv) {
     //sending MD5
     printf("Sending MD5...\n");
     uint8_t *md5Hash = NULL;
+	int packetId = -1; //control packet
     int md5Length = getmd5Hash(&md5Hash, fileBuffer, fileSize);
     printf("MD5 hash: ");
     for(int i = 0; i < md5Length; i++) printf("%x", md5Hash[i]);
@@ -204,33 +202,17 @@ int main(int argc, char **argv) {
 
     //calculate crc
     uint32_t crc = crc32(md5Hash, md5Length);
-    memcpy(buffer, md5Hash, md5Length);
-    memcpy(buffer + md5Length , &crc, sizeof(uint32_t));
-    sendPacket(buffer, md5Length + sizeof(uint32_t));
+
+    memcpy(sendBuffer, md5Hash, md5Length);
+    memcpy(sendBuffer + md5Length , &packetId, sizeof(int));
+    memcpy(sendBuffer + md5Length + sizeof(int), &crc, sizeof(uint32_t));
+
     //STOP AND WAIT 
-    while (waitForACK(-1) == -1){
-        if (sendPacket(buffer, md5Length) == -1){
+	do {
+        if (sendPacket(sendBuffer, md5Length + CONTROL) == -1)
             perror("Packet was not sent succesfully"); 
-        }
-    }
+	} while (waitForACK(-1) == -1);
 
-
-
-
-
-
-
-
-
-    /*int n; */
-    /*uint32_t len;*/
-    /*sendto(socketFd, (const char *)hello, strlen(hello), MSG_CONFIRM, (const struct sockaddr*) &servaddr, sizeof(servaddr)); */
-    /*printf("Hello message sent.\n"); */
-          
-    /*n = recvfrom(socketFd, (char *)buffer, BUFLEN, MSG_WAITALL, (struct sockaddr *) &servaddr, &len); */
-    /*buffer[n] = '\0'; */
-    /*printf("Server : %s\n", buffer); */
-  
     close(socketFd); 
     return 0; 
 } 

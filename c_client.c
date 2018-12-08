@@ -18,7 +18,7 @@
 #define PORT 9999// The port on which to send data
 
 #define TIMEOUT 500
-#define FRAMESIZE 5 //must fit in uint8_t
+#define FRAMESIZE 8 //must fit in uint8_t
 #define ACKSIZE 3
 
 //TODO: user input arguments
@@ -338,6 +338,7 @@ int main(int argc, char **argv) {
     //sending MD5
     printf("Sending MD5...\n");
     uint8_t *md5Hash = NULL;
+	int packetId = -1; //control packet
     int md5Length = getmd5Hash(&md5Hash, fileBuffer, fileSize);
     printf("MD5 hash: ");
     for(int i = 0; i < md5Length; i++) printf("%x", md5Hash[i]);
@@ -347,32 +348,14 @@ int main(int argc, char **argv) {
     //calculate crc
     uint32_t crc = crc32(md5Hash, md5Length);
     memcpy(sendBuffer, md5Hash, md5Length);
-    memcpy(sendBuffer + md5Length , &crc, sizeof(uint32_t));
-    sendPacket(sendBuffer, md5Length + sizeof(uint32_t));
-    //STOP AND WAIT 
-    while (waitForACK(-1) == -1){
-        if (sendPacket(sendBuffer, md5Length) == -1){
+    memcpy(sendBuffer + md5Length , &packetId, sizeof(int));
+    memcpy(sendBuffer + md5Length + sizeof(int), &crc, sizeof(uint32_t));
+	
+	do {
+        if (sendPacket(sendBuffer, md5Length + CONTROL) == -1)
             perror("Packet was not sent succesfully"); 
-        }
-    }
+	} while (waitForACK(-1) == -1);
 
-
-
-
-
-
-
-
-
-    /*int n; */
-    /*uint32_t len;*/
-    /*sendto(socketFd, (const char *)hello, strlen(hello), MSG_CONFIRM, (const struct sockaddr*) &servaddr, sizeof(servaddr)); */
-    /*printf("Hello message sent.\n"); */
-          
-    /*n = recvfrom(socketFd, (char *)buffer, BUFLEN, MSG_WAITALL, (struct sockaddr *) &servaddr, &len); */
-    /*buffer[n] = '\0'; */
-    /*printf("Server : %s\n", buffer); */
-  
     close(socketFd); 
     return 0; 
 } 

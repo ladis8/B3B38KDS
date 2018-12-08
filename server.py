@@ -41,31 +41,40 @@ def sendACK(s, addr, positive, chunk_id=None):
 
 def unpack_packet(data):
     crc_received = unpack("I", bytes(data[-4:]))[0]
-    chunk_id = unpack("I", bytes(data[-8:-4]))[0]
+    chunk_id = unpack("i", bytes(data[-8:-4]))[0]
     file_data = data[:-8]
     return chunk_id, crc_received, file_data
 
 def check_md5(socket, md5_hash):
-    data, addr = socket.recvfrom(1024)
-    crc_received = unpack("I", bytes(data[-4:]))[0]
-    crc_computed = binascii.crc32(data[:-4])
-    md5_hash_received = binascii.hexlify(data[:-4])
-    md5_hash_computed = binascii.hexlify(md5_hash.digest())
+    logging.info("Waiting for receiving MD5 hash")
 
-    logging.info("MD5 hash received : %s, computed MD5 hash: %s, crc received %d, crc computed: %d", md5_hash_received,
-                 md5_hash_computed, crc_received, crc_computed)
+    while True:
+        data, addr = socket.recvfrom(1024)
+        chunk_id, crc_received, file_data = unpack_packet(data)
 
-    if crc_computed == crc_received:
-        # send positive ACK
-        logging.debug("SUCCESS: Sending positive ACK for MD5 hash")
-        sendACK(socket, addr, True)
-        if md5_hash_computed == md5_hash_received:
-            logging.info("File has been transfered successfully")
+        crc_computed = binascii.crc32(file_data)
+
+        if crc_computed == crc_received:
+            #delayed data packet was received
+            if chunk_id != -1:
+                logging.debug("SUCCESS Sending positive ACK for packet %d", chunk_id)
+                sendACK(socket, addr, True, chunk_id)
+            else:
+                md5_hash_received = binascii.hexlify(file_data)
+                md5_hash_computed = binascii.hexlify(md5_hash.digest())
+
+                logging.info("MD5 hash received : %s, computed MD5 hash: %s, crc received %d, crc computed: %d", md5_hash_received,
+                     md5_hash_computed, crc_received, crc_computed)
+                logging.debug("SUCCESS: Sending positive ACK for MD5 hash")
+                sendACK(socket, addr, True)
+                if md5_hash_computed == md5_hash_received:
+                    logging.info("File has been transfered successfully")
+                else:
+                    logging.info("File is CORRUPTED!!!")
+                break
         else:
-            logging.info("File is CORRUPTED!!!")
-    else:
-        logging.debug("ERROR: Sending negative ACK")
-        sendACK(socket, addr, False)
+            logging.debug("ERROR: Sending negative ACK")
+            sendACK(socket, addr, False)
 
 
 
