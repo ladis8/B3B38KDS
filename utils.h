@@ -12,6 +12,10 @@ uint32_t crc32(uint8_t *message, int bufSize);
 
 int getmd5Hash(uint8_t **md5buffer, uint8_t *buffer, int bufferlength);
 
+
+int getFileSize(FILE *fp);
+
 void forceExit(char *message);
+
 
 #endif

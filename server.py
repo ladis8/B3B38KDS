@@ -21,7 +21,7 @@ CONTROL = 8
 CHUNK_SIZE = BUFLEN - CONTROL
 
 ERROR_DATA = 0.1
-ERROR_ACK_LOST = 0.03
+ERROR_ACK_LOST = 0.05
 
 def sendACK(s, addr, positive, chunk_id=None):
 
@@ -32,11 +32,11 @@ def sendACK(s, addr, positive, chunk_id=None):
         logging.debug("ACK LOST...")
         return
 
-    # send positive ACK
+    # send positive ACK - send chunk_id as 2bytes (H)
     if positive:
-        s.sendto(pack('b', ACK) + pack('b', chunk_id), addr) if chunk_id is not None else s.sendto(pack('b', ACK), addr)
+        s.sendto(pack('b', ACK) + pack('>H', chunk_id), addr) if chunk_id is not None else s.sendto(pack('b', ACK), addr)
     else:
-        s.sendto(pack('b', NOT_ACK) + pack('b', chunk_id), addr) if chunk_id is not None else s.sendto(pack('b', NOT_ACK), addr)
+        s.sendto(pack('b', NOT_ACK) + pack('>H', chunk_id), addr) if chunk_id is not None else s.sendto(pack('b', NOT_ACK), addr)
 
 
 def unpack_packet(data):
@@ -81,25 +81,25 @@ def receive_file_SelectiveRepeat(socket, file_size, file_name, FRAMESIZE):
 
             # receive data
             data, addr = socket.recvfrom(BUFLEN)
-            frame_index, crc_received, file_data = unpack_packet(data)
+            chunk_id, crc_received, file_data = unpack_packet(data)
 
             # compute crc
             crc_computed = binascii.crc32(file_data)
 
-            logging.debug("Expected chunk: from %d to %d, frame index received %d, crc received %d, crc computed: %d ",
-                          least_acknowledged_packet_id, least_acknowledged_packet_id + FRAMESIZE, frame_index,
+            logging.debug("Expected chunk: from %d to %d, chunk received %d, crc received %d, crc computed: %d ",
+                          least_acknowledged_packet_id, least_acknowledged_packet_id + FRAMESIZE, chunk_id,
                           crc_received, crc_computed)
 
-            assert (frame_index < FRAMESIZE)
 
             #send ACK
             if crc_computed == crc_received and random.random() > ERROR_DATA: #simulate bad CRC
-                logging.debug("SUCCESS Sending positive ACK for packet %d", least_acknowledged_packet_id + frame_index)
-                sendACK(socket, addr, True, frame_index)
-                packet_buffer[frame_index] = file_data
+                logging.debug("SUCCESS Sending positive ACK for packet %d", chunk_id)
+                sendACK(socket, addr, True, chunk_id)
+                if least_acknowledged_packet_id <= chunk_id < least_acknowledged_packet_id + FRAMESIZE:
+                    packet_buffer[chunk_id%FRAMESIZE] = file_data
             else:
-                logging.debug("ERROR Sending negative ACK for packet %d", least_acknowledged_packet_id + frame_index)
-                sendACK(socket, addr, False, frame_index)
+                logging.debug("ERROR Sending negative ACK for packet %d",  chunk_id)
+                sendACK(socket, addr, False, chunk_id)
 
             # check that all packets in frame has been delivered
             if not None in packet_buffer:

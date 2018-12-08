@@ -19,9 +19,10 @@
 
 #define TIMEOUT 500
 #define FRAMESIZE 5 //must fit in uint8_t
+#define ACKSIZE 3
 
 //TODO: user input arguments
-//TODO: store packets in FRAME buffer
+//TODO: ACK for sending filename and filesize
 
 //
 //
@@ -35,12 +36,6 @@ socklen_t myAddressLength= sizeof(myAddress);
 socklen_t serverAddressLength= sizeof(servaddr);
 
 
-int getFileSize(FILE *fp) {
-    fseek(fp, 0L, SEEK_END);
-    int size = ftell(fp);
-    fseek(fp, 0L, SEEK_SET);
-    return size;
-}
 
 int sendPacket(uint8_t *buffer, int bufferLength){
 
@@ -147,26 +142,29 @@ int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowle
 
 		//SUCCESS
 		else if (FD_ISSET(socketFd, &readSet)){
-			uint32_t ACKBuffer [2]; 
+			uint8_t ACKBuffer [ACKSIZE]; 
 			//first 0/1 good  or bad 
 			//index of ACK in frame
 
-			if (receivePacket(ACKBuffer, 2 * sizeof(uint32_t)) == 2){
+			if (receivePacket(ACKBuffer, ACKSIZE * sizeof(uint8_t)) != ACKSIZE)
+                return -1;
 
-				uint32_t ACKIndex = ACKBuffer[1]%((int)FRAMESIZE);
-                if (ACKIndex < FRAMESIZE){
+            int ACKIndex = (((int)ACKBuffer[1]<< 8) | ACKBuffer[2]);
+            int ACKFrameIndex = ACKIndex%((int)FRAMESIZE);
+            printf("DEBUG: ACK index is %d, frameindex is %d\n", ACKIndex, ACKFrameIndex);
 
-                    ACKCounter++;
-                    if (ACKBuffer[0] == 1){
-                        printf("DEBUG: SUCCESS for packet with chunkID %d\n", (leastAcknowledgedPacket + ACKIndex));
-                        ACKPackets[ACKIndex] = 1;
-                    }
-                    else{  //ACK was not received or was 0
-                        printf("DEBUG: ERROR for packet with chunk %d - ACK was 0\n",(leastAcknowledgedPacket + ACKIndex));
-                    }
-                    
+            if (ACKIndex < leastAcknowledgedPacket + FRAMESIZE && ACKIndex >= leastAcknowledgedPacket){
+                ACKCounter++;
+                if (ACKBuffer[0] == 1){
+                    printf("DEBUG: SUCCESS for packet with chunkID %d\n", ACKIndex);
+                    ACKPackets[ACKFrameIndex] = 1;
                 }
-			}
+                else{  //ACK was not received or was 0
+                    printf("DEBUG: ERROR for packet with chunk %d - ACK was 0\n", ACKIndex);
+                }
+                
+            }
+            //else WHAT  TO DO???
 		}
 
 	}

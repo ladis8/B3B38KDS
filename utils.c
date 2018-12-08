@@ -28,8 +28,14 @@ int getmd5Hash(uint8_t **md5Buffer, uint8_t *buffer, int bufferLength){
 	MD5_Final(*md5Buffer, &md5);
 	return MD5_DIGEST_LENGTH;
 }
-	
-	
+
+int getFileSize(FILE *fp) {
+    fseek(fp, 0L, SEEK_END);
+    int size = ftell(fp);
+    fseek(fp, 0L, SEEK_SET);
+    return size;
+}
+
 
 void forceExit(char *message){
 	perror(message);

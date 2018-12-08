@@ -31,14 +31,6 @@ struct sockaddr_in myAddress, servaddr;
 socklen_t myAddressLength= sizeof(myAddress);
 socklen_t serverAddressLength= sizeof(servaddr);
 
-
-int getFileSize(FILE *fp) {
-    fseek(fp, 0L, SEEK_END);
-    int size = ftell(fp);
-    fseek(fp, 0L, SEEK_SET);
-    return size;
-}
-
 int sendPacket(uint8_t *buffer, int bufferLength){
 
     int bytesSend;	
@@ -49,13 +41,16 @@ int sendPacket(uint8_t *buffer, int bufferLength){
 }
 int receivePacket(uint8_t *buffer, int bufferLength){
     int bytesReceived = recvfrom(socketFd, buffer, bufferLength, 0, (struct sockaddr *)&servaddr,(socklen_t *) &myAddressLength);
+
+    //printf("DEBUG: Received bytes are %d Packet %d %d \n",bytesReceived, buffer[0], buffer[1]);
     if ( bytesReceived == -1) {
         return -1;
     }
-    //printf("DEBUG: Received bytes are %d Packet %d string %s\n",bytesReceived, buffer[1], buffer);
     return bytesReceived;
 
 }
+
+
 
 //OUTPUT VALUE :
 //  timeout expired
