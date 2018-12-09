@@ -13,12 +13,21 @@
 
 #define BUFLEN 1024 // Max length of buffer
 #define MAXFILESIZE 104857600 //100 MiB
-#define CONTROL 8 //4 bytes position in file //4bytes crc
-#define CHUNKSIZE BUFLEN - CONTROL
-#define PORT 9999// The port on which to send data
+#define CONTROL 6 //2 bytes position in file //4bytes crc
+#define PACKETDATASIZE BUFLEN - CONTROL
+//NetDerper ports
+#define PORTDATA_SERVER 9998	// Server port on which to send data
+#define PORTDATA_CLIENT 9997	// Client port on which to send data
+#define PORTACK_SERVER  8888 	// Server port from  which to receive ACK
+#define PORTACK_CLIENT  8887 	// Client port from  which to receive ACK
+
+/*#define PORTDATA_SERVER 9999	// Server port on which to send data*/
+/*#define PORTDATA_CLIENT 9998	// Client port on which to send data*/
+/*#define PORTACK_SERVER  8889 	// Server port from  which to receive ACK*/
+/*#define PORTACK_CLIENT  8888 	// Client port from  which to receive ACK*/
 
 #define TIMEOUT 500
-
+#define ACKSIZE 1 + 2 + 4       //ACK + packetId + crc
 //TODO: user input arguments
 //
 //
@@ -26,24 +35,23 @@
 
 
 
-int socketFd; 
-struct sockaddr_in myAddress, servaddr;
-socklen_t myAddressLength= sizeof(myAddress);
-socklen_t serverAddressLength= sizeof(servaddr);
+int transmitSocketFd, receiveSocketFd; 
+struct sockaddr_in client_DATA, server_DATA, client_ACK, server_ACK;
 
 int sendPacket(uint8_t *buffer, int bufferLength){
 
     int bytesSend;	
-    if ((bytesSend = sendto(socketFd, buffer, bufferLength, 0, (struct sockaddr *) &servaddr, (socklen_t) serverAddressLength)) == -1 ) {
+    if ((bytesSend = sendto(transmitSocketFd, buffer, bufferLength, 0, (struct sockaddr *) &server_DATA, (socklen_t) sizeof(server_DATA))) == -1 ) {
         return -1;
     }
     return bytesSend;
 }
 int receivePacket(uint8_t *buffer, int bufferLength){
-    int bytesReceived = recvfrom(socketFd, buffer, bufferLength, 0, (struct sockaddr *)&servaddr,(socklen_t *) &myAddressLength);
 
+    int serverLen =sizeof(server_ACK);
+    int bytesReceived; 
     //printf("DEBUG: Received bytes are %d Packet %d %d \n",bytesReceived, buffer[0], buffer[1]);
-    if ( bytesReceived == -1) {
+    if ((bytesReceived  = recvfrom(receiveSocketFd, buffer, bufferLength, 0, (struct sockaddr *)&server_ACK,(socklen_t *) &serverLen)) == -1) {
         return -1;
     }
     return bytesReceived;
@@ -55,165 +63,203 @@ int receivePacket(uint8_t *buffer, int bufferLength){
 //OUTPUT VALUE :
 //  timeout expired
 //  ACK received
-int waitForACK(int packetId){
+int waitForACK(uint16_t packetId){
     struct timeval tv;
     tv.tv_sec = 0;
     tv.tv_usec = TIMEOUT * 1000;
     fd_set readSet;
     FD_ZERO(&readSet);
-    FD_SET(socketFd, &readSet);
+    FD_SET(receiveSocketFd, &readSet);
 
-    int event = select(socketFd+1, &readSet, NULL, NULL, &tv);
+    int event = select(receiveSocketFd+1, &readSet, NULL, NULL, &tv);
 
     if (event == -1){
         forceExit("Error happend in wait for sockets");
     }
     else if (event == 0){
-        printf("TIMEOUT: in receiving ACK for packet %d\n", packetId);
+        printf("TIMEOUT: in receiving ACK for packet %d\n",packetId);
         return -1;
     }
-    else if (FD_ISSET(socketFd, &readSet)){
-        uint8_t ACKBuffer;
-        if (receivePacket(&ACKBuffer, sizeof(uint8_t)) == 1){
-            if (ACKBuffer == 1){
-                printf("SUCCESS: packet with chunkID %d sent\n", packetId);
-                return 0;
-            }
-            else{  //ACK was not received or was 0
-                printf("ERROR: ACK %d was not 1\n",ACKBuffer);
-                return -1;
-            }
+    else if (FD_ISSET(receiveSocketFd, &readSet)){
+
+        uint8_t packetBuffer[ACKSIZE];
+        uint32_t crcReceived; uint16_t packetIdReceived; uint8_t ACKReceived;
+        
+        //not enough bytes came
+        if (receivePacket(packetBuffer, ACKSIZE) != ACKSIZE){
+            printf("ERROR: Not %d bytes were received when ACK\n", ACKSIZE);
+            return -1;
+        }
+
+        unpackPacket(packetBuffer, ACKSIZE, &ACKReceived, &packetIdReceived, &crcReceived); 
+        printf("DEBUG: Wait for %u packet ACK - ACK packet %u %u %u\n", packetId, ACKReceived, packetIdReceived, crcReceived);
+
+        //negative ACK or corrupted packet
+        if (ACKReceived != 1 || crcReceived != crc32(packetBuffer, ACKSIZE - sizeof(uint32_t))){
+            printf("ERROR: packet %u  - ACK %u was not positive\n",packetId, ACKReceived);
+            return -1;
+        }
+        //packet ACK came for earlier packet
+        if (packetId != packetIdReceived){
+            printf("DEBUG: ACK for earlier packet - expected %u received %u\n", packetId, packetIdReceived);
+            return -1;
+        }
+        else{
+            printf("DEBUG: Success packet with packetId %u sent successfully \n", packetId);
+            return 0;
         }
     }
+
     return -1;
 }
 
-
-
-void sendFile (FILE *fileFd){
-
-    //uint8_t buffer [BUFLEN];
-
-    uint8_t* buffer = (uint8_t*) malloc(BUFLEN);
-    int bytesRead;
-    int chunkId = 0;
-    uint32_t crc;
-
-    //set cursor
-    fseek(fileFd, 0L, SEEK_SET);
-
-    //read the first chunk
-    while (!feof(fileFd)){
-
-        //read chunk
-        bytesRead = fread(buffer, 1, CHUNKSIZE, fileFd);
-
-        //calculate crc
-        crc = crc32(buffer, bytesRead);
-
-        //send chunk to server
-        memcpy(buffer + bytesRead , &chunkId, sizeof(int));
-        memcpy(buffer + bytesRead+ sizeof(int), &crc, sizeof(int));
-
+int sendPacketStopAndWait(uint8_t *packet, int packetId, int packetSize){
         //STOP AND WAIT 
+        int failesCounter = 0;
 		do{
-			if (sendPacket(buffer,bytesRead + CONTROL) == -1)
+			if (sendPacket(packet, packetSize) == -1){
 				perror("Packet was not sent succesfully"); 
-        }while (waitForACK(chunkId) == -1);
-        chunkId++;
-    }
+                failesCounter++;
+            }
+        }while (waitForACK((uint16_t)packetId) == -1);
+        return failesCounter;
 }
 
 
-int main(int argc, char **argv) {
-    //clock_t program_start = time(0);
 
-    uint8_t sendBuffer[BUFLEN]; 
+void sendFile (uint8_t *fileBuffer, int fileSize){
+
+    //uint8_t buffer [BUFLEN];
+    int numPackets = fileSize/((int)PACKETDATASIZE) + 1;
+    printf("INFO: The total number of packets will be %u\n", numPackets);
+    uint16_t packetId = 0;
+    int failesCounter = 0;
+    uint8_t* sendBuffer = (uint8_t*) malloc(BUFLEN);
 
 
-    if (argc < 3) {
-        printf("HELP Usage: ./sender <adress> <filename>\n");
-        exit(EXIT_FAILURE);
+    while (packetId < numPackets){
+
+        //read packet 
+        int packetDataSize = (packetId == numPackets -1)? fileSize%((int)PACKETDATASIZE) : PACKETDATASIZE;
+        memcpy(sendBuffer, fileBuffer + packetId * ((int)PACKETDATASIZE), packetDataSize);
+        memcpy(sendBuffer + packetDataSize, &packetId, sizeof(uint16_t));
+
+        //calculate crc
+        uint32_t crc = crc32(sendBuffer, packetDataSize + sizeof(uint16_t));
+
+        //send packet to server
+        memcpy(sendBuffer + packetDataSize + sizeof(uint16_t), &crc, sizeof(int));
+
+        //send by stop and wait
+        failesCounter += sendPacketStopAndWait(sendBuffer, packetId, packetDataSize + CONTROL);
+        packetId++;
     }
+}
 
-    //creating socket file descriptor 
-    if ((socketFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0 ) { 
-        perror("Socket creation failed"); 
-        exit(EXIT_FAILURE);
-    } 
+int createSocket(struct sockaddr_in *src, struct sockaddr_in *dest, int portSrc, int portDest, char* address) {
+
+	int socketFd;
+    if ((socketFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0 )
+		forceExit("Socket creation failed");
+
+	
 
     // Filling server information 
-    memset(&servaddr, 0, sizeof(servaddr)); //fill conf zeros
-    servaddr.sin_family = AF_INET; 
-    servaddr.sin_port = htons(PORT); 
-    servaddr.sin_addr.s_addr = inet_addr(argv[1]);
-    //if (inet_aton(SERVER, &servaddr.sin_addr) == 0) {exit(1);}
+    memset(dest, 0, sizeof(*dest)); //fill conf zeros
+    (*dest).sin_family = AF_INET; 
+    (*dest).sin_port = htons(portDest); 
+    (*dest).sin_addr.s_addr = inet_addr(address);
+    //if (inet_aton(SERVER, &server.sin_addr) == 0) {exit(1);}
+
+	// Filling client information 
+	memset(src, 0, sizeof(*src));
+    (*src).sin_family = AF_INET;
+    (*src).sin_addr.s_addr = htonl(INADDR_ANY);
+    (*src).sin_port = htons(portSrc);
+
+	if (bind(socketFd, (struct sockaddr *) src, sizeof(*src)) < 0)
+		forceExit("Socekt bind failed");
+	return socketFd;
+}
+   
+
+		
 
 
+int main(int argc, char **argv) {
 
-    //bind(socketfd,(const struct sockaddr*) &servaddr);
+    if (argc < 3) 
+        forceExit("HELP Usage: ./sender <adress> <filename>\n");
+    
+
+	transmitSocketFd = createSocket(&client_DATA, &server_DATA, (int) PORTDATA_CLIENT,(int) PORTDATA_SERVER, argv[1]);
+	receiveSocketFd  = createSocket(&client_ACK, &server_ACK, (int) PORTACK_CLIENT,(int) PORTACK_SERVER, argv[1]); 
+
 
     //read file
     char* fileName = argv[2];
     FILE* fileFd = fopen(fileName, "rb");
-    if (fileFd == NULL){
-        perror("File decsriptor creation failed"); 
-        exit(EXIT_FAILURE);
-    }
+    if (fileFd == NULL)
+        forceExit("File decsriptor creation failed"); 
+    
     int fileSize = getFileSize(fileFd);
-    printf("The file size is %d", fileSize);
-    uint8_t* fileBuffer = (uint8_t*) malloc(fileSize+1);
-    if (!fileBuffer){
-        perror("Memory allocation error"); 
-        exit(EXIT_FAILURE);
-    }
-
+    printf("The file size is %d\n", fileSize);
+    uint8_t* fileBuffer = (uint8_t*) malloc(fileSize);
+    if (!fileBuffer)
+        forceExit("Memory allocation error"); 
+    
     fread(fileBuffer, fileSize, 1, fileFd); 
+    fclose(fileFd);
 
+
+	uint16_t packetId = -1; //control packet
+    uint32_t crc;
 
     //Sending filename
-    int fileNameLen = strlen(fileName);
+    uint8_t sendBuffer[BUFLEN]; 
+    int fileNameLength = strlen(fileName);
     printf("Sending filename...\n");
-    if (sendto(socketFd, fileName, fileNameLen, 0, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
-        perror("Failed to send filename\n");
-    }
+    
+    memcpy(sendBuffer, fileName, fileNameLength);
+    memcpy(sendBuffer + fileNameLength, &packetId, sizeof(uint16_t));
+    crc = crc32(sendBuffer, fileNameLength + sizeof(uint16_t));
+    memcpy(sendBuffer + fileNameLength + sizeof(uint16_t), &crc, sizeof(int));
+
+    sendPacketStopAndWait(sendBuffer, packetId, fileNameLength + CONTROL);
 
     //Sending filesize
     printf("Sending filesize...\n");
-    if (sendto(socketFd, &fileSize, sizeof(fileSize), 0, (struct sockaddr *) &servaddr,sizeof(servaddr)) == -1) {
-        perror("Failed to send file size\n");
-    }
+    memcpy(sendBuffer, &fileSize, sizeof(int));
+    memcpy(sendBuffer + sizeof(int), &packetId, sizeof(uint16_t));
+    crc = crc32(sendBuffer, sizeof(int) + sizeof(uint16_t));
+    memcpy(sendBuffer + sizeof(int) + sizeof(uint16_t), &crc, sizeof(int));
+
+    sendPacketStopAndWait(sendBuffer, packetId, sizeof(int) + CONTROL);
 
     //sending file
     printf("Sending file...\n");
-    sendFile(fileFd);
-    fclose(fileFd);
+    sendFile(fileBuffer, fileSize);
 
 
     //sending MD5
     printf("Sending MD5...\n");
     uint8_t *md5Hash = NULL;
-	int packetId = -1; //control packet
     int md5Length = getmd5Hash(&md5Hash, fileBuffer, fileSize);
     printf("MD5 hash: ");
     for(int i = 0; i < md5Length; i++) printf("%x", md5Hash[i]);
     printf (" %s\n", fileName);
 
 
-    //calculate crc
-    uint32_t crc = crc32(md5Hash, md5Length);
 
     memcpy(sendBuffer, md5Hash, md5Length);
-    memcpy(sendBuffer + md5Length , &packetId, sizeof(int));
-    memcpy(sendBuffer + md5Length + sizeof(int), &crc, sizeof(uint32_t));
+    memcpy(sendBuffer + md5Length , &packetId, sizeof(uint16_t));
+    crc = crc32(sendBuffer, md5Length + sizeof(uint16_t));
+    memcpy(sendBuffer + md5Length + sizeof(uint16_t), &crc, sizeof(uint32_t));
 
-    //STOP AND WAIT 
-	do {
-        if (sendPacket(sendBuffer, md5Length + CONTROL) == -1)
-            perror("Packet was not sent succesfully"); 
-	} while (waitForACK(-1) == -1);
+    sendPacketStopAndWait(sendBuffer, -1, md5Length + CONTROL);
 
-    close(socketFd); 
+    close(receiveSocketFd); 
+	close(transmitSocketFd);
     return 0; 
 } 
 

@@ -29,6 +29,25 @@ int getmd5Hash(uint8_t **md5Buffer, uint8_t *buffer, int bufferLength){
 	return MD5_DIGEST_LENGTH;
 }
 
+/**
+ * Function that unpacks a pacet to data, chunkId and crc.
+ *
+ * @author Ladislav Stefka 
+ */
+void unpackPacket(uint8_t *packet, int packetLength, uint8_t *packetData, uint16_t *chunkId, uint32_t *crc){
+    int packetDataLength = packetLength - sizeof(uint16_t) - sizeof(uint32_t);
+    memcpy(packetData, packet, packetDataLength);
+    memcpy(chunkId, packet + packetDataLength, sizeof(uint16_t)); 
+    memcpy(crc, packet + packetDataLength + sizeof(uint16_t), sizeof(uint32_t));
+}
+
+
+        
+
+
+        
+
+
 int getFileSize(FILE *fp) {
     fseek(fp, 0L, SEEK_END);
     int size = ftell(fp);
