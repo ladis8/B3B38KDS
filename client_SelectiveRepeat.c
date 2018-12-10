@@ -4,6 +4,7 @@
 #include <sys/socket.h> 
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h> //close open 
 
 
@@ -15,19 +16,22 @@
 #define CONTROL 6 //2 bytes position in file //4bytes crc
 #define PACKETDATASIZE BUFLEN - CONTROL
 
-//NetDerper ports
-#define PORTDATA_SERVER 9998	// Server port on which to send data
-#define PORTDATA_CLIENT 9997	// Client port on which to send data
-#define PORTACK_SERVER  8888 	// Server port from  which to receive ACK
-#define PORTACK_CLIENT  8887 	// Client port from  which to receive ACK
+#ifdef NETDERPER
+    //NetDerper ports
+    #define PORTDATA_SERVER 9998	// Server port on which to send data
+    #define PORTDATA_CLIENT 9997	// Client port on which to send data
+    #define PORTACK_SERVER  8888 	// Server port from  which to receive ACK
+    #define PORTACK_CLIENT  8887 	// Client port from  which to receive ACK
+#else
+    #define PORTDATA_SERVER 9999	// Server port on which to send data*/
+    #define PORTDATA_CLIENT 9998	// Client port on which to send data<]
+    #define PORTACK_SERVER  8889 	// Server port from  which to receive ACK
+    #define PORTACK_CLIENT  8888 	// Client port from  which to receive ACK
+#endif 
 
-/*#define PORTDATA_SERVER 9999	// Server port on which to send data*/
-/*#define PORTDATA_CLIENT 9998	// Client port on which to send data*/
-/*#define PORTACK_SERVER  8889 	// Server port from  which to receive ACK*/
-/*#define PORTACK_CLIENT  8888 	// Client port from  which to receive ACK*/
 
 
-#define TIMEOUT 200
+#define TIMEOUT 400
 #define FRAMESIZE 10 //must fit in uint8_t
 #define ACKSIZE 1 + 2 + 4
 
@@ -298,32 +302,6 @@ void sendFilebySelectiveRepeat(uint8_t *fileBuffer, int fileSize){
     
 }
 
-int createSocket(struct sockaddr_in *src, struct sockaddr_in *dest, int portSrc, int portDest, char* address) {
-
-	int socketFd;
-    if ((socketFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0 )
-		forceExit("Socket creation failed");
-
-	
-
-    // Filling server information 
-    memset(dest, 0, sizeof(*dest)); //fill conf zeros
-    (*dest).sin_family = AF_INET; 
-    (*dest).sin_port = htons(portDest); 
-    (*dest).sin_addr.s_addr = inet_addr(address);
-    //if (inet_aton(SERVER, &server.sin_addr) == 0) {exit(1);}
-
-	// Filling client information 
-	memset(src, 0, sizeof(*src));
-    (*src).sin_family = AF_INET;
-    (*src).sin_addr.s_addr = htonl(INADDR_ANY);
-    (*src).sin_port = htons(portSrc);
-
-	if (bind(socketFd, (struct sockaddr *) src, sizeof(*src)) < 0)
-		forceExit("Socekt bind failed");
-	return socketFd;
-}
-   
 
 
 int main(int argc, char **argv) {
@@ -370,6 +348,9 @@ int main(int argc, char **argv) {
 
     sendPacketStopAndWait(sendBuffer, packetId, fileNameLength + CONTROL);
 
+
+
+
     //Sending filesize
 	packetId = -2; //control packet
     printf("Sending filesize...\n");
@@ -379,10 +360,16 @@ int main(int argc, char **argv) {
     memcpy(sendBuffer + sizeof(int) + sizeof(uint16_t), &crc, sizeof(int));
 
     sendPacketStopAndWait(sendBuffer, packetId, sizeof(int) + CONTROL);
+    
+
+
 
     //sending file
+    time_t t = time(NULL); 
     printf("Sending file...\n");
     sendFilebySelectiveRepeat(fileBuffer, fileSize);
+
+
 
 
     //sending MD5
@@ -402,6 +389,9 @@ int main(int argc, char **argv) {
     memcpy(sendBuffer + md5Length + sizeof(uint16_t), &crc, sizeof(uint32_t));
 
     sendPacketStopAndWait(sendBuffer, packetId, md5Length + CONTROL);
+    t = time(NULL) - t; 
+    printf("File transfer took approximately %f seconds\n", (double)t);
+
 
     close(receiveSocketFd); 
 	close(transmitSocketFd);

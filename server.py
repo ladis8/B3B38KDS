@@ -89,9 +89,9 @@ def check_md5(md5_hash):
     logging.info("MD5 hash received : %s, computed MD5 hash: %s", md5_hash_received,
                  md5_hash_computed)
     if md5_hash_computed == md5_hash_received:
-        logging.info("File has been transfered successfully")
+        logging.info("Success - file has been transfered successfully!")
     else:
-        logging.info("File is CORRUPTED!!!")
+        logging.info("Error - file is CORRUPTED!!!")
 
 def receive_file_SelectiveRepeat(file_size, file_name, FRAMESIZE):
     packet_buffer = [None] * FRAMESIZE
@@ -189,6 +189,8 @@ def Main():
         receive_file_SelectiveRepeat(file_size, file_name, FRAMESIZE)
     elif method == 0:
         receive_file_StopAndWait(file_size, file_name)
+
+    while True:pass
 
 if __name__ == '__main__':
     Main()

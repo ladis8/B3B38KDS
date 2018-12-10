@@ -41,6 +41,33 @@ void unpackPacket(uint8_t *packet, int packetLength, uint8_t *packetData, uint16
     memcpy(crc, packet + packetDataLength + sizeof(uint16_t), sizeof(uint32_t));
 }
 
+int createSocket(struct sockaddr_in *src, struct sockaddr_in *dest, int portSrc, int portDest, char* address) {
+
+	int socketFd;
+    if ((socketFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0 )
+		forceExit("Socket creation failed");
+
+
+    // Filling server information 
+    memset(dest, 0, sizeof(*dest)); //fill conf zeros
+    (*dest).sin_family = AF_INET; 
+    (*dest).sin_port = htons(portDest); 
+    (*dest).sin_addr.s_addr = inet_addr(address);
+    //if (inet_aton(SERVER, &server.sin_addr) == 0) {exit(1);}
+
+	// Filling client information 
+    printf("Socket bind %d %u\n", socketFd, portSrc);
+	memset(src, 0, sizeof(*src));
+    (*src).sin_family = AF_INET;
+    (*src).sin_addr.s_addr = htonl(INADDR_ANY);
+    (*src).sin_port = htons(portSrc);
+
+	if (bind(socketFd, (struct sockaddr *) src, sizeof(*src)) < 0)
+		forceExit("Socekt bind failed");
+	return socketFd;
+}
+
+
 
         
 
