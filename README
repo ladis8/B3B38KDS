@@ -1,0 +1,37 @@
+Client-Server communication via UDP socket for file transfering
+    - communication is protected by ARQ Stop And Wait (method 0)
+    - communication is protected by ARQ Selective Repeat (method 0)
+
+MANUAL Compiling: 
+        make TARGET="" PORTS=""
+        parameters: TARGET = STOPANDWAIT/SELECTIVEREPEAT 
+        parameters: PORTS = NETDERPER/NORMAL
+
+        Running:
+        ./client_StopAndWait <ipaddress> <filePath>
+        ./client_SelectiveRepeat <ipaddress> <filePath> <frameSize> 
+
+        NetDerper running:
+        dotnet Netderper.CLI.dll
+
+NOTE: for Netderper using .NET Runtime app must be downloaded
+      Netderper works as a man in the middle
+
+NOTE: PORTS are defined in program:
+      "NORMAL" 
+            client_DATA: 9998
+            client_ACK:  8888 
+            server_DATA: 9999
+            server_ACK:  8889
+      "NETDERPER" 
+            client_DATA:    9997
+            client_ACK:     8887 
+            netderper_DATA: 9998
+            netderper_ACK:  8888 
+            server_DATA:    9999
+            server_ACK:     8889
+
+
+
+
+
