@@ -8,7 +8,6 @@
 #include <unistd.h> //close open 
 
 
-
 #include "utils.h"
 
 
@@ -163,7 +162,7 @@ void sendFile (uint8_t *fileBuffer, int fileSize){
 int main(int argc, char **argv) {
 
     if (argc < 3) 
-        forceExit("HELP Usage: ./sender <adress> <filename>\n");
+        forceExit("HELP Usage: ./client_StopAndWait <adress> <filename>\n");
     
 
 	transmitSocketFd = createSocket(&client_DATA, &server_DATA, (int) PORTDATA_CLIENT,(int) PORTDATA_SERVER, argv[1]);

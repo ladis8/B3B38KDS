@@ -56,7 +56,7 @@ int createSocket(struct sockaddr_in *src, struct sockaddr_in *dest, int portSrc,
     //if (inet_aton(SERVER, &server.sin_addr) == 0) {exit(1);}
 
 	// Filling client information 
-    printf("Socket bind %d %u\n", socketFd, portSrc);
+    printf("INFO: Socket bind %d %u\n", socketFd, portSrc);
 	memset(src, 0, sizeof(*src));
     (*src).sin_family = AF_INET;
     (*src).sin_addr.s_addr = htonl(INADDR_ANY);

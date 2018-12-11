@@ -24,7 +24,7 @@
 
 #define LISTENANY "0.0.0.0"
 #define ACKSIZE 1 + 2 + 4
-#define FRAMESIZE 10
+#define DEFAULTFRAMESIZE 10
 
 
 //TODO: String split of filename
@@ -122,7 +122,7 @@ int isValueInArray(uint8_t val, uint8_t *array, int size){
     return 0;
 }
 
-FILE* receiveFileSelectiveRepeat(FILE *fileFd,  int fileSize){
+FILE* receiveFileSelectiveRepeat(FILE *fileFd,  int fileSize, int frameSize){
     printf("INFO: Selective repeat...\n");
 
     int numPackets = fileSize/((int)PACKETDATASIZE) + 1;
@@ -131,13 +131,13 @@ FILE* receiveFileSelectiveRepeat(FILE *fileFd,  int fileSize){
     uint8_t *receiveBuffer = (uint8_t*) malloc(BUFLEN);
 
     //ACKs for frame - 0 packet deliverd successfully / 1 packet not delivered yet
-    uint8_t packetsBufferACKs[FRAMESIZE];
-    memset(packetsBufferACKs, 1, FRAMESIZE);
+    uint8_t packetsBufferACKs[frameSize];
+    memset(packetsBufferACKs, 1, frameSize);
 
-    int packetsBufferLength = FRAMESIZE;
+    int packetsBufferLength = (frameSize < numPackets)? frameSize : numPackets;
 
-    uint8_t **packetsBuffer = (uint8_t**) malloc(sizeof(uint8_t*) * FRAMESIZE);
-    for (int i = 0; i < FRAMESIZE; i++)
+    uint8_t **packetsBuffer = (uint8_t**) malloc(sizeof(uint8_t*) * frameSize);
+    for (int i = 0; i < frameSize; i++)
         packetsBuffer[i] = (uint8_t*)malloc(sizeof(uint8_t) * BUFLEN);
 
 
@@ -154,7 +154,7 @@ FILE* receiveFileSelectiveRepeat(FILE *fileFd,  int fileSize){
                 leastAcknowledgedPacketId, leastAcknowledgedPacketId + packetsBufferLength, crcReceived, crcComputed);
 
         //Packet was delivered OK
-        int frameIndex = packetIdReceived%((int)FRAMESIZE);
+        int frameIndex = packetIdReceived%((int)frameSize);
         if (crcReceived == crcComputed){
 
             sendACK(1, packetIdReceived);
@@ -187,7 +187,7 @@ FILE* receiveFileSelectiveRepeat(FILE *fileFd,  int fileSize){
 
            //restore ACK buffers
           leastAcknowledgedPacketId += packetsBufferLength;
-          packetsBufferLength = (leastAcknowledgedPacketId + FRAMESIZE < numPackets)? FRAMESIZE : numPackets - leastAcknowledgedPacketId;
+          packetsBufferLength = (leastAcknowledgedPacketId + frameSize < numPackets)? frameSize : numPackets - leastAcknowledgedPacketId;
           memset(packetsBufferACKs, 1, packetsBufferLength);
        }
      }
@@ -202,7 +202,7 @@ int main(int argc, char **argv) {
 
 
     if (argc < 2 ) 
-        forceExit("HELP Usage: ./server <method> <framesize>\n");
+        forceExit("HELP Usage: ./server <method> <frameSize - optional>\n");
 
 
     receiveSocketFd = createSocket(&server_DATA, &client_DATA, (int) PORTDATA_SERVER,(int) PORTDATA_CLIENT, LISTENANY);
@@ -214,9 +214,18 @@ int main(int argc, char **argv) {
     //receive filename
     printf("INFO: Receiving file name...\n");
     int fileNameLength = receivePacketStopAndWait(receiveBuffer, -1);
-    uint8_t fileName [fileNameLength+1];
-    memcpy(fileName, receiveBuffer, fileNameLength);
-    fileName[fileNameLength] = 0x0;
+
+
+    int delimeter = 0;
+    for (int i = fileNameLength; i > 0; i--){
+        if (receiveBuffer[i] == '/'){
+            delimeter = i +1;
+            break;
+        }
+    }
+    uint8_t fileName [fileNameLength - delimeter + 1];
+    memcpy(fileName, receiveBuffer + delimeter, fileNameLength - delimeter);
+    fileName[fileNameLength - delimeter] = 0x0;
     
 
 
@@ -226,12 +235,12 @@ int main(int argc, char **argv) {
     int fileSize;
     memcpy(&fileSize, receiveBuffer, sizeof(int));
 
-    printf("INFO: File %s will be received with size %d...\n", (char*)fileName, fileSize);
+    printf("INFO: File %s will be received with size %d in total packets %d...\n", (char*)fileName, fileSize, fileSize/((int)PACKETDATASIZE) + 1);
 
     //receive file
     char newFileName [255];
-    strcpy(newFileName,"new_.jpg");
-    //strcat(newFileName, (char*)fileName);
+    strcpy(newFileName,"new_");
+    strcat(newFileName,(char*) fileName);
     printf("INFO: New file name: %s\n", newFileName);
 
     FILE *fileFd = fopen(newFileName, "wb+");
@@ -241,8 +250,10 @@ int main(int argc, char **argv) {
 
     if (memcmp (argv[1], "0", 1) == 0)
         fileFd = receiveFileStopAndWait(fileFd, fileSize);
-    if (memcmp(argv[1], "1", 1) == 0)
-        fileFd = receiveFileSelectiveRepeat(fileFd, fileSize);
+    if (memcmp(argv[1], "1", 1) == 0){
+        int frameSize = (argc > 2 )? atoi(argv[2]): DEFAULTFRAMESIZE;
+        fileFd = receiveFileSelectiveRepeat(fileFd, fileSize, frameSize);
+    }
 
     
     fseek(fileFd, 0L, SEEK_SET);

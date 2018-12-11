@@ -32,10 +32,8 @@
 
 
 #define TIMEOUT 400
-#define FRAMESIZE 10 //must fit in uint8_t
+#define DEFAULTFRAMESIZE 10 //must fit in uint8_t
 #define ACKSIZE 1 + 2 + 4
-
-//TODO: user input arguments
 
 
 int transmitSocketFd, receiveSocketFd; 
@@ -61,11 +59,14 @@ int receivePacket(uint8_t *buffer, int bufferLength){
 
 }
 
-void restoreAcknowledgedPackets(int *ACKPackets){
+void restoreAcknowledgedPackets(int *ACKPackets, int leastAcknowledgedPacket, int frameSize, int numPackets){
 
-    for (int i = 0; i < FRAMESIZE; i++){
-        ACKPackets[i] = -1;
-    }
+		//check end of communication
+		//if communication is at the end, send only the remaining number of packets
+		int packetsBufferLength = (leastAcknowledgedPacket + frameSize > numPackets)? numPackets - leastAcknowledgedPacket : frameSize;
+
+	    for (int i = 0; i < frameSize; i++)
+				ACKPackets[i] = (i < packetsBufferLength)? -1 : 1 ;
 }
 
 
@@ -130,7 +131,7 @@ int waitForACK(uint16_t packetId){
 //  timeout expired
 //  ACK received
 //ACKCounter ... number of successfully sent packets so far
-int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowledgedPacket ){
+int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowledgedPacket, int frameSize ){
 
     struct timeval tv;
     tv.tv_sec = 0;
@@ -141,7 +142,7 @@ int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowle
 
 
 	
-	while (ACKCounter < FRAMESIZE){
+	while (ACKCounter < frameSize){
 
     	int event = select(receiveSocketFd+1, &readSet, NULL, NULL, &tv);
 		
@@ -152,7 +153,7 @@ int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowle
 
 		//TIMEOUT
     	else if (event == 0){
-			for (int i=0; i < FRAMESIZE; i++){
+			for (int i=0; i < frameSize; i++){
 					if (ACKPackets[i] == -1)
         				printf("DEBUG: TIMEOUT in receiving ACK for packet %d  in frame from  %d\n", (leastAcknowledgedPacket +i), leastAcknowledgedPacket);
 			}	
@@ -172,7 +173,7 @@ int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowle
             }
 
             unpackPacket(packetBuffer, ACKSIZE, &ACKReceived, &packetIdReceived, &crcReceived); 
-            printf("DEBUG: Wait for packet ACK (%u to %u) - ACK packet %u %u %u\n", leastAcknowledgedPacket, leastAcknowledgedPacket + FRAMESIZE, ACKReceived, packetIdReceived, crcReceived);
+            printf("DEBUG: Wait for packet ACK (%u to %u) - ACK packet %u %u %u\n", leastAcknowledgedPacket, leastAcknowledgedPacket + frameSize, ACKReceived, packetIdReceived, crcReceived);
 
 
             //negative ACK or corrupted packet
@@ -183,12 +184,12 @@ int waitForACKSelectiveRepeat(int ACKCounter, int *ACKPackets, int leastAcknowle
             }
             else{
                 //packet ACK came for earlier packet
-                if (leastAcknowledgedPacket + FRAMESIZE <= packetIdReceived || packetIdReceived < leastAcknowledgedPacket ){
-                    printf("DEBUG: ACK for earlier packet -expected (%u  to %u) received %u\n", leastAcknowledgedPacket, leastAcknowledgedPacket + FRAMESIZE, packetIdReceived);
+                if (leastAcknowledgedPacket + frameSize <= packetIdReceived || packetIdReceived < leastAcknowledgedPacket ){
+                    printf("DEBUG: ACK for earlier packet -expected (%u  to %u) received %u\n", leastAcknowledgedPacket, leastAcknowledgedPacket + frameSize, packetIdReceived);
                 }
                 else{
 
-                    int frameIndex = packetIdReceived%((int)FRAMESIZE);
+                    int frameIndex = packetIdReceived%((int)frameSize);
                     ACKPackets[frameIndex] = 1;
                     printf("DEBUG: Success packet with packetId %u sent successfully \n", packetIdReceived);
                 }
@@ -217,18 +218,22 @@ int sendPacketStopAndWait(uint8_t *packet, int packetId, int packetSize){
 
 
 
-void sendFilebySelectiveRepeat(uint8_t *fileBuffer, int fileSize){
-    
-    int ACKPackets [FRAMESIZE];
-	int ACKCounter = 0;
-    restoreAcknowledgedPackets(ACKPackets);
-
+void sendFilebySelectiveRepeat(uint8_t *fileBuffer, int fileSize, int frameSize){
+   
+    int leastAcknowledgedPacket = 0;
 
     //count needed packets 
     int numPackets = fileSize/((int)PACKETDATASIZE) + 1;
     int failesCounter = 0;
 
-    int leastAcknowledgedPacket = 0;
+    //check frameSize 
+    if (frameSize > numPackets) 
+        frameSize = numPackets;
+
+    int ACKPackets [frameSize];
+	int ACKCounter = 0;
+    restoreAcknowledgedPackets(ACKPackets, leastAcknowledgedPacket, frameSize, numPackets);
+
     printf ("Total number of packets will be %d\n", numPackets);
     
     //create send buffer
@@ -244,7 +249,7 @@ void sendFilebySelectiveRepeat(uint8_t *fileBuffer, int fileSize){
         uint32_t crc;
 
         //send as many packets as unacknowledged in frame
-        for (int i = 0; i < FRAMESIZE; i++){
+        for (int i = 0; i < frameSize; i++){
             if (ACKPackets[i] == -1){
 
                 //send chunk to server
@@ -268,11 +273,11 @@ void sendFilebySelectiveRepeat(uint8_t *fileBuffer, int fileSize){
         }
 
         //wait for the ACKs
-		waitForACKSelectiveRepeat(ACKCounter, ACKPackets, leastAcknowledgedPacket);
+		waitForACKSelectiveRepeat(ACKCounter, ACKPackets, leastAcknowledgedPacket, frameSize);
 
 		//get number of so far successfully sent packets
 		int ACKCounter = 0;
-		for (int i = 0; i < FRAMESIZE; i++){
+		for (int i = 0; i < frameSize; i++){
             printf("%d ", ACKPackets[i]);
 			if (ACKPackets[i] == 1) ACKCounter++;
 		}
@@ -280,20 +285,11 @@ void sendFilebySelectiveRepeat(uint8_t *fileBuffer, int fileSize){
 		
 
 		//check end of frame		
-		if (ACKCounter == FRAMESIZE){
-			leastAcknowledgedPacket += FRAMESIZE;
-			
-			//check end of communication
-			//if communication is at the end, send only the remaining number of packets
-			if (leastAcknowledgedPacket + FRAMESIZE > numPackets){
-				int numPacketsToRemain = numPackets - leastAcknowledgedPacket;
-				for (int i = 0; i < numPacketsToRemain; i++){
-					ACKPackets[i] = -1;
-				}
-			}
-			else
-				restoreAcknowledgedPackets(ACKPackets);
-            printf("\n");
+		if (ACKCounter == frameSize){
+			leastAcknowledgedPacket += frameSize;
+            
+			restoreAcknowledgedPackets(ACKPackets, leastAcknowledgedPacket, frameSize, numPackets);
+            printf("All packets in FRAME has been acknowleadged\n\n");
 		}
 
 
@@ -308,7 +304,7 @@ int main(int argc, char **argv) {
 
 
     if (argc < 3) 
-        forceExit("HELP Usage: ./sender <adress> <filename>\n");
+        forceExit("HELP Usage: ./client_SelectiveRepeat <adress> <filename> <framesize - optional>\n");
     
 
 	transmitSocketFd = createSocket(&client_DATA, &server_DATA, (int) PORTDATA_CLIENT,(int) PORTDATA_SERVER, argv[1]);
@@ -339,7 +335,7 @@ int main(int argc, char **argv) {
 	uint16_t packetId = -1; //control packet
     uint8_t sendBuffer[BUFLEN]; 
     int fileNameLength = strlen(fileName);
-    printf("Sending filename...\n");
+    printf("Sending file name...\n");
     
     memcpy(sendBuffer, fileName, fileNameLength);
     memcpy(sendBuffer + fileNameLength, &packetId, sizeof(uint16_t));
@@ -353,7 +349,7 @@ int main(int argc, char **argv) {
 
     //Sending filesize
 	packetId = -2; //control packet
-    printf("Sending filesize...\n");
+    printf("Sending file size...\n");
     memcpy(sendBuffer, &fileSize, sizeof(int));
     memcpy(sendBuffer + sizeof(int), &packetId, sizeof(uint16_t));
     crc = crc32(sendBuffer, sizeof(int) + sizeof(uint16_t));
@@ -365,9 +361,10 @@ int main(int argc, char **argv) {
 
 
     //sending file
+    int frameSize = (argc > 3 )? atoi(argv[3]): DEFAULTFRAMESIZE;
     time_t t = time(NULL); 
-    printf("Sending file...\n");
-    sendFilebySelectiveRepeat(fileBuffer, fileSize);
+    printf("Sending file with frame size %d...\n", frameSize);
+    sendFilebySelectiveRepeat(fileBuffer, fileSize, frameSize);
 
 
 
